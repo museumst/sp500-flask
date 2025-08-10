@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>실시간 LSTM 예측 시뮬레이터</title>
+    <!-- Tailwind CSS 로드 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js 로드 -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #3b82f6;
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .day {
+            display: inline-block;
+            width: 14.28%;
+            text-align: center;
+            padding: 8px 4px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-bottom: 4px;
+        }
+        .day:not(.empty-day):not(.future-day):hover {
+            background-color: rgba(59, 130, 246, 0.2);
+            transform: scale(1.05);
+        }
+        .day.selected {
+            background-color: #3b82f6;
+            color: white;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+        }
+        .day.empty-day {
+            visibility: hidden;
+            cursor: default;
+        }
+        .day.future-day {
+            color: #9ca3af;
+            cursor: not-allowed;
+        }
+        .accuracy-indicator {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 16px;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+        .accuracy-good {
+            background-color: #10b981;
+            color: white;
+        }
+        .accuracy-fair {
+            background-color: #f59e0b;
+            color: white;
+        }
+        .accuracy-poor {
+            background-color: #ef4444;
+            color: white;
+        }
+        .pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .status-online {
+            background-color: #10b981;
+            animation: pulse 2s infinite;
+        }
+        .status-offline {
+            background-color: #ef4444;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div class="glass p-8 rounded-3xl shadow-2xl max-w-5xl w-full transform transition-all duration-300 hover:scale-[1.02]">
+        <h1 class="text-4xl font-bold mb-6 text-center text-white drop-shadow-lg">
+            🚀 실시간 LSTM 주가 예측 시뮬레이터
+        </h1>
+
+        <!-- 서버 상태 표시 -->
+        <div class="glass p-4 rounded-xl mb-6 text-center">
+            <div id="server-status" class="text-white font-medium">
+                <span id="status-indicator" class="status-indicator status-offline"></span>
+                <span id="status-text">서버 연결 확인 중...</span>
+            </div>
+        </div>
+
+        <p class="text-lg text-white/90 mb-8 text-center leading-relaxed">
+            종목 코드를 입력하고 달력에서 과거 날짜를 선택하여<br>
+            <span class="font-semibold text-yellow-300">실시간 데이터로 시간 여행 백테스트</span>를 경험해보세요!
+        </p>
+
+        <!-- 입력 및 달력 섹션 -->
+        <div class="grid lg:grid-cols-2 gap-8 mb-8">
+            <div class="space-y-4">
+                <label for="stock-ticker" class="block text-white font-semibold text-lg">
+                    📈 종목 코드
+                </label>
+                <input type="text" id="stock-ticker" placeholder="예: AAPL, GOOGL, TSLA, MSFT"
+                       class="w-full p-4 border-0 rounded-xl focus:outline-none focus:ring-4 focus:ring-blue-300/50 transition duration-300 text-lg font-medium shadow-lg">
+                
+                <!-- 종목 정보 표시 -->
+                <div id="stock-info" class="glass p-4 rounded-xl text-white text-center hidden">
+                    <div id="company-name" class="font-bold text-lg text-yellow-300"></div>
+                    <div id="current-price" class="text-sm text-white/80 mt-1"></div>
+                </div>
+                
+                <!-- 선택된 날짜 표시 -->
+                <div id="selected-date-display" class="glass p-4 rounded-xl text-white text-center hidden">
+                    <span class="font-semibold">선택된 날짜: </span>
+                    <span id="selected-date-text" class="font-bold text-yellow-300"></span>
+                </div>
+            </div>
+
+            <!-- 달력 컨테이너 -->
+            <div class="glass p-6 rounded-xl shadow-inner">
+                <div class="flex justify-between items-center mb-6">
+                    <button id="prev-month" class="text-white hover:text-yellow-300 transition-colors text-2xl font-bold p-2 hover:bg-white/10 rounded-full">
+                        ‹
+                    </button>
+                    <div id="month-year" class="font-bold text-xl text-white"></div>
+                    <button id="next-month" class="text-white hover:text-yellow-300 transition-colors text-2xl font-bold p-2 hover:bg-white/10 rounded-full">
+                        ›
+                    </button>
+                </div>
+                <div class="grid grid-cols-7 gap-1 text-center font-semibold text-sm text-white/80 mb-3">
+                    <div class="py-2">일</div>
+                    <div class="py-2">월</div>
+                    <div class="py-2">화</div>
+                    <div class="py-2">수</div>
+                    <div class="py-2">목</div>
+                    <div class="py-2">금</div>
+                    <div class="py-2">토</div>
+                </div>
+                <div id="calendar-days" class="grid grid-cols-7 gap-1"></div>
+            </div>
+        </div>
+
+        <button id="predict-button"
+                class="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-bold py-4 rounded-xl shadow-xl hover:shadow-2xl focus:outline-none focus:ring-4 focus:ring-blue-300/50 transition duration-300 transform hover:scale-[1.02] text-lg disabled:opacity-50 disabled:cursor-not-allowed">
+            🔮 실시간 데이터로 시간여행 예측하기
+        </button>
+
+        <div class="mt-8 glass p-8 rounded-2xl border border-white/20">
+            <h2 class="text-2xl font-bold mb-6 text-white flex items-center">
+                📊 예측 결과
+            </h2>
+            
+            <div id="loading-spinner" class="flex justify-center mb-6 hidden">
+                <div class="spinner"></div>
+                <span class="ml-4 text-white font-medium">실시간 데이터 분석 및 LSTM 예측 중...</span>
+            </div>
+
+            <!-- 예측 결과 텍스트 출력 -->
+            <div id="prediction-text" class="text-lg text-white font-medium mb-6 p-4 rounded-xl glass">
+                여기에 예측 결과가 표시됩니다. 종목 코드를 입력하고 달력에서 날짜를 선택한 후 예측 버튼을 클릭해보세요! 🎯
+            </div>
+            
+            <!-- 실제 가격 및 정확도 표시 -->
+            <div id="results-container" class="hidden space-y-4">
+                <div class="grid md:grid-cols-3 gap-4">
+                    <div class="glass p-4 rounded-xl">
+                        <div class="text-white/80 text-sm">실제 다음날 주가</div>
+                        <div id="actual-price" class="text-2xl font-bold text-white"></div>
+                    </div>
+                    <div class="glass p-4 rounded-xl">
+                        <div class="text-white/80 text-sm">예측 정확도</div>
+                        <div id="accuracy-display" class="text-2xl font-bold"></div>
+                    </div>
+                    <!-- ✅ 새로 추가: 선택일 종가 -->
+                    <div class="glass p-4 rounded-xl">
+                        <div class="text-white/80 text-sm">선택일 종가</div>
+                        <div id="selected-close" class="text-2xl font-bold text-white"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 시각화를 위한 캔버스 -->
+            <div class="mt-6 glass p-4 rounded-xl">
+                <canvas id="predictionChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 설정
+        const API_BASE_URL = 'http://localhost:5000';
+        
+        // DOM 요소 가져오기
+        const stockTickerInput = document.getElementById('stock-ticker');
+        const predictButton = document.getElementById('predict-button');
+        const predictionText = document.getElementById('prediction-text');
+        const resultsContainer = document.getElementById('results-container');
+        const actualPriceEl = document.getElementById('actual-price');
+        const accuracyDisplay = document.getElementById('accuracy-display');
+        const chartCanvas = document.getElementById('predictionChart');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const selectedDateDisplay = document.getElementById('selected-date-display');
+        const selectedDateText = document.getElementById('selected-date-text');
+        const stockInfo = document.getElementById('stock-info');
+        const companyName = document.getElementById('company-name');
+        const currentPrice = document.getElementById('current-price');
+        const selectedCloseEl = document.getElementById('selected-close');
+        
+        // 서버 상태 관련
+        const serverStatus = document.getElementById('server-status');
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        
+        const monthYearEl = document.getElementById('month-year');
+        const calendarDaysEl = document.getElementById('calendar-days');
+        const prevMonthBtn = document.getElementById('prev-month');
+        const nextMonthBtn = document.getElementById('next-month');
+
+        let myChart;
+        let currentDate = new Date();
+        let selectedDate = null;
+        let stockData = null;
+        const ctx = chartCanvas.getContext('2d');
+
+        // 서버 상태 확인
+        async function checkServerStatus() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/health`);
+                if (response.ok) {
+                    statusIndicator.className = 'status-indicator status-online';
+                    statusText.textContent = '🟢 실시간 데이터 서버 연결됨';
+                    return true;
+                } else {
+                    throw new Error('서버 응답 오류');
+                }
+            } catch (error) {
+                statusIndicator.className = 'status-indicator status-offline';
+                statusText.textContent = '🔴 서버 연결 실패 - Flask 서버를 실행해주세요';
+                return false;
+            }
+        }
+
+        // Chart.js 초기화
+        function initializeChart() {
+            if (myChart) {
+                myChart.destroy();
+            }
+            myChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '📈 실제 주가',
+                        data: [],
+                        borderColor: 'rgb(59, 130, 246)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderWidth: 3,
+                        pointBackgroundColor: 'rgb(59, 130, 246)',
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointRadius: 6,
+                        pointHoverRadius: 8,
+                        fill: true,
+                        tension: 0.3,
+                    }, {
+                        label: '🔮 LSTM 예측',
+                        data: [],
+                        borderColor: 'rgb(249, 115, 22)',
+                        backgroundColor: 'rgb(249, 115, 22)',
+                        borderWidth: 3,
+                        pointRadius: 8,
+                        pointHoverRadius: 10,
+                        pointStyle: 'star',
+                        borderDash: [5, 5],
+                    }, {
+                        label: '✅ 실제 결과',
+                        data: [],
+                        borderColor: 'rgb(34, 197, 94)',
+                        backgroundColor: 'rgb(34, 197, 94)',
+                        borderWidth: 3,
+                        pointRadius: 10,
+                        pointHoverRadius: 12,
+                        pointStyle: 'circle',
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                color: 'white',
+                                font: {
+                                    size: 14,
+                                    family: 'Inter, sans-serif',
+                                    weight: '600'
+                                }
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: '🚀 실시간 주가 예측 결과',
+                            color: 'white',
+                            font: {
+                                size: 18,
+                                family: 'Inter, sans-serif',
+                                weight: '700'
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: '날짜',
+                                color: 'white',
+                                font: {
+                                    size: 14,
+                                    family: 'Inter, sans-serif'
+                                }
+                            },
+                            ticks: {
+                                color: 'white'
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: '주가 ($)',
+                                color: 'white',
+                                font: {
+                                    size: 14,
+                                    family: 'Inter, sans-serif'
+                                }
+                            },
+                            ticks: {
+                                color: 'white'
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // 실시간 주가 데이터 가져오기
+        async function fetchStockData(ticker) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/stock/${ticker}`);
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || '데이터를 가져올 수 없습니다.');
+                }
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.error('주가 데이터 조회 실패:', error);
+                throw error;
+            }
+        }
+
+        // 종목 정보 가져오기
+        async function fetchStockInfo(ticker) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/stock/${ticker}/info`);
+                if (response.ok) {
+                    return await response.json();
+                }
+                return null;
+            } catch (error) {
+                console.error('종목 정보 조회 실패:', error);
+                return null;
+            }
+        }
+
+        // 종목 코드 입력 시 정보 표시
+        stockTickerInput.addEventListener('input', async (e) => {
+            const ticker = e.target.value.trim().toUpperCase();
+            if (ticker.length >= 3) {
+                try {
+                    const info = await fetchStockInfo(ticker);
+                    if (info && info.company_name !== 'N/A') {
+                        companyName.textContent = info.company_name;
+                        if (info.current_price !== 'N/A') {
+                            currentPrice.textContent = `현재가: $${info.current_price}`;
+                        } else {
+                            currentPrice.textContent = `${info.sector || '정보 없음'}`;
+                        }
+                        stockInfo.classList.remove('hidden');
+                    } else {
+                        stockInfo.classList.add('hidden');
+                    }
+                } catch (error) {
+                    stockInfo.classList.add('hidden');
+                }
+            } else {
+                stockInfo.classList.add('hidden');
+            }
+        });
+
+        // LSTM 시뮬레이션 (더 현실적인 예측)
+        function simulateLSTMPrediction(sequence) {
+            if (sequence.length < 5) {
+                return null;
+            }
+
+            const recent = sequence.slice(-5);
+            
+            // 트렌드 분석
+            const shortTrend = (recent[4] - recent[3]) / recent[3];
+            const mediumTrend = (recent[4] - recent[2]) / recent[2] / 2;
+            const longTrend = (recent[4] - recent[0]) / recent[0] / 4;
+            
+            // 가중 평균 트렌드
+            const weightedTrend = (shortTrend * 0.5 + mediumTrend * 0.3 + longTrend * 0.2);
+            
+            // 변동성 계산
+            const volatility = Math.sqrt(recent.reduce((sum, price, i) => {
+                if (i === 0) return sum;
+                const change = (price - recent[i-1]) / recent[i-1];
+                return sum + change * change;
+            }, 0) / (recent.length - 1));
+            
+            // 예측값 계산
+            const basePrice = recent[4];
+            const trendComponent = basePrice * weightedTrend;
+            const noiseComponent = basePrice * volatility * (Math.random() - 0.5) * 1.5;
+            const meanReversion = (basePrice - recent.reduce((a, b) => a + b, 0) / recent.length) * -0.1;
+            
+            const predictedValue = basePrice + trendComponent + noiseComponent + meanReversion;
+            return Math.max(predictedValue, basePrice * 0.85);
+        }
+        
+        // 정확도 계산 함수
+        function calculateAccuracy(predicted, actual) {
+            const error = Math.abs((predicted - actual) / actual) * 100;
+            if (error <= 2) return { level: 'good', text: `🎯 매우 정확! (오차: ${error.toFixed(1)}%)` };
+            if (error <= 5) return { level: 'fair', text: `👍 양호 (오차: ${error.toFixed(1)}%)` };
+            return { level: 'poor', text: `📈 개선 필요 (오차: ${error.toFixed(1)}%)` };
+        }
+        
+        // 달력 렌더링 함수
+        function renderCalendar() {
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
+            const today = new Date();
+            const firstDayOfMonth = new Date(year, month, 1);
+            const lastDayOfMonth = new Date(year, month + 1, 0);
+            const startDayOfWeek = firstDayOfMonth.getDay();
+
+            monthYearEl.textContent = `${year}년 ${month + 1}월`;
+            calendarDaysEl.innerHTML = '';
+
+            // 빈 날짜 셀
+            for (let i = 0; i < startDayOfWeek; i++) {
+                const emptyDay = document.createElement('div');
+                emptyDay.classList.add('day', 'empty-day');
+                calendarDaysEl.appendChild(emptyDay);
+            }
+
+            // 실제 날짜들
+            for (let i = 1; i <= lastDayOfMonth.getDate(); i++) {
+                const dayEl = document.createElement('div');
+                dayEl.classList.add('day');
+                dayEl.textContent = i;
+                
+                const dayDate = new Date(year, month, i);
+                
+                // 과거 날짜만 선택 가능 (최소 7일 전까지)
+                const minDate = new Date(today);
+                minDate.setDate(today.getDate() - 7);
+                
+                if (dayDate.getTime() <= minDate.getTime()) {
+                    dayEl.addEventListener('click', () => {
+                        document.querySelectorAll('.day.selected').forEach(el => el.classList.remove('selected'));
+                        dayEl.classList.add('selected');
+                        selectedDate = dayDate;
+                        
+                        const selectedStr = dayDate.toISOString().split('T')[0];
+                        // ✅ stockData가 로드되어 있으면 선택일 종가를 즉시 상단 표시
+                        if (stockData) {
+                            const idx = stockData.findIndex(item => item.date === selectedStr);
+                            if (idx !== -1) {
+                                const price = stockData[idx].price;
+                                selectedDateText.textContent = dayDate.toLocaleDateString('ko-KR', {
+                                    year: 'numeric',
+                                    month: 'long',
+                                    day: 'numeric'
+                                }) + `  (종가: $${price.toFixed(2)})`;
+                            } else {
+                                selectedDateText.textContent = dayDate.toLocaleDateString('ko-KR', {
+                                    year: 'numeric',
+                                    month: 'long',
+                                    day: 'numeric'
+                                });
+                            }
+                        } else {
+                            selectedDateText.textContent = dayDate.toLocaleDateString('ko-KR', {
+                                year: 'numeric',
+                                month: 'long',
+                                day: 'numeric'
+                            });
+                        }
+                        selectedDateDisplay.classList.remove('hidden');
+                    });
+                } else {
+                    dayEl.classList.add('future-day');
+                    dayEl.title = '예측을 위해 7일 전 까지의 날짜만 선택 가능합니다';
+                }
+
+                if (selectedDate && dayDate.toDateString() === selectedDate.toDateString()) {
+                    dayEl.classList.add('selected');
+                }
+
+                calendarDaysEl.appendChild(dayEl);
+            }
+        }
+
+        // 이전/다음 달 버튼 이벤트
+        prevMonthBtn.addEventListener('click', () => {
+            currentDate.setMonth(currentDate.getMonth() - 1);
+            renderCalendar();
+        });
+
+        nextMonthBtn.addEventListener('click', () => {
+            currentDate.setMonth(currentDate.getMonth() + 1);
+            renderCalendar();
+        });
+
+        // 예측 버튼 클릭 이벤트
+        predictButton.addEventListener('click', async () => {
+            const ticker = stockTickerInput.value.trim().toUpperCase();
+
+            // 서버 연결 확인
+            const serverOnline = await checkServerStatus();
+            if (!serverOnline) {
+                predictionText.innerHTML = "🚨 <strong>서버에 연결할 수 없습니다!</strong><br>Flask 서버가 실행 중인지 확인해주세요.";
+                predictionText.className = "text-lg text-red-300 font-medium mb-6 p-4 rounded-xl glass pulse";
+                return;
+            }
+
+            // 입력 검증
+            if (!ticker) {
+                predictionText.innerHTML = "🚨 <strong>유효한 종목 코드를 입력해주세요!</strong>";
+                predictionText.className = "text-lg text-red-300 font-medium mb-6 p-4 rounded-xl glass pulse";
+                return;
+            }
+
+            if (!selectedDate) {
+                predictionText.innerHTML = "📅 <strong>백테스트를 위해 달력에서 날짜를 선택해주세요!</strong>";
+                predictionText.className = "text-lg text-yellow-300 font-medium mb-6 p-4 rounded-xl glass pulse";
+                return;
+            }
+
+            // UI 초기화 및 로딩 표시
+            predictButton.disabled = true;
+            loadingSpinner.classList.remove('hidden');
+            predictionText.innerHTML = "🌐 실시간 주가 데이터 다운로드 중...";
+            predictionText.className = "text-lg text-white font-medium mb-6 p-4 rounded-xl glass";
+            resultsContainer.classList.add('hidden');
+            
+            // 차트 초기화
+            myChart.data.labels = [];
+            myChart.data.datasets[0].data = [];
+            myChart.data.datasets[1].data = [];
+            myChart.data.datasets[2].data = [];
+            myChart.update();
+
+            try {
+                // 실시간 데이터 가져오기
+                predictionText.innerHTML = "📡 Yahoo Finance에서 실시간 데이터 수신 중...";
+                const stockResponse = await fetchStockData(ticker);
+                stockData = stockResponse.data;
+
+                predictionText.innerHTML = `✅ ${stockResponse.company_name} 데이터 수신 완료!<br>🤖 LSTM 신경망 분석 중...`;
+                await new Promise(resolve => setTimeout(resolve, 1500)); // 시각적 효과
+
+                // 선택한 날짜를 기준으로 데이터 분할
+                const selectedDateString = selectedDate.toISOString().split('T')[0];
+                const selectedIndex = stockData.findIndex(item => item.date === selectedDateString);
+
+                if (selectedIndex === -1) {
+                    throw new Error(`선택한 날짜(${selectedDateString})의 데이터를 찾을 수 없습니다. 다른 날짜를 선택해주세요.`);
+                }
+
+                if (selectedIndex < 4) {
+                    throw new Error("선택한 날짜의 데이터가 충분하지 않습니다. (최소 5일 필요)");
+                }
+
+                // ✅ 선택일 종가 표시
+                const selectedClose = stockData[selectedIndex].price;
+                selectedCloseEl.textContent = selectedClose.toFixed(2);
+
+                const pricesForPrediction = stockData.slice(0, selectedIndex + 1).map(item => item.price);
+                const datesForDisplay = stockData.slice(0, selectedIndex + 1).map(item => 
+                    new Date(item.date).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' })
+                );
+
+                // LSTM 예측 수행
+                predictionText.innerHTML = "🧠 LSTM 신경망으로 예측값 계산 중...";
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                const predictedValue = simulateLSTMPrediction(pricesForPrediction);
+                
+                // 실제 다음날 주가 가져오기
+                const actualNextDay = stockData[selectedIndex + 1];
+                const nextDayDateFormatted = actualNextDay ? 
+                    new Date(actualNextDay.date).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }) : 
+                    '데이터 없음';
+
+                // 차트 데이터 업데이트
+                const chartLabels = [...datesForDisplay];
+                const actualPrices = [...pricesForPrediction];
+                const predictedPrices = new Array(pricesForPrediction.length).fill(null);
+                const actualResults = new Array(pricesForPrediction.length).fill(null);
+                
+                if (actualNextDay) {
+                    chartLabels.push(nextDayDateFormatted);
+                    actualPrices.push(actualNextDay.price);
+                    predictedPrices.push(predictedValue);
+                    actualResults.push(actualNextDay.price);
+                } else {
+                    chartLabels.push('예측일');
+                    actualPrices.push(null);
+                    predictedPrices.push(predictedValue);
+                    actualResults.push(null);
+                }
+
+                myChart.data.labels = chartLabels;
+                myChart.data.datasets[0].data = actualPrices;
+                myChart.data.datasets[1].data = predictedPrices;
+                myChart.data.datasets[2].data = actualResults;
+                myChart.update();
+
+                // 결과 표시
+                const selectedDateFormatted = selectedDate.toLocaleDateString('ko-KR', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                });
+
+                predictionText.innerHTML = `
+                    🎯 <strong>${stockResponse.company_name} (${ticker})</strong><br>
+                    📅 <strong>${selectedDateFormatted}</strong> 기준 시간여행 완료!<br>
+                    🔮 LSTM 예측 다음날 주가: <span class="text-yellow-300 font-bold text-xl">${predictedValue.toFixed(2)}</span>
+                `;
+                predictionText.className = "text-lg text-white font-medium mb-6 p-4 rounded-xl glass";
+
+                if (actualNextDay) {
+                    const accuracy = calculateAccuracy(predictedValue, actualNextDay.price);
+                    
+                    actualPriceEl.textContent = `${actualNextDay.price.toFixed(2)}`;
+                    accuracyDisplay.innerHTML = `<span class="accuracy-indicator accuracy-${accuracy.level}">${accuracy.text}</span>`;
+                    resultsContainer.classList.remove('hidden');
+                } else {
+                    predictionText.innerHTML += '<br><span class="text-orange-300">⚠️ 다음날 실제 데이터가 없어 정확도를 계산할 수 없습니다.</span>';
+                    resultsContainer.classList.add('hidden');
+                }
+
+            } catch (error) {
+                console.error('예측 오류:', error);
+                predictionText.innerHTML = `🚨 <strong>오류 발생:</strong> ${error.message}`;
+                predictionText.className = "text-lg text-red-300 font-medium mb-6 p-4 rounded-xl glass pulse";
+                resultsContainer.classList.add('hidden');
+            } finally {
+                // 로딩 숨기기 및 버튼 활성화
+                loadingSpinner.classList.add('hidden');
+                predictButton.disabled = false;
+            }
+        });
+
+        // 키보드 이벤트 (Enter키로 예측 실행)
+        stockTickerInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !predictButton.disabled) {
+                predictButton.click();
+            }
+        });
+
+        // 차트 컨테이너 높이 설정
+        function setChartHeight() {
+            chartCanvas.style.height = '400px';
+        }
+
+        // 페이지 로드 시 초기화
+        window.onload = async function() {
+            initializeChart();
+            renderCalendar();
+            setChartHeight();
+            
+            // 서버 상태 확인
+            await checkServerStatus();
+            
+            // 기본 날짜를 2주일 전으로 설정
+            const defaultDate = new Date();
+            defaultDate.setDate(defaultDate.getDate() - 14);
+            selectedDate = defaultDate;
+            currentDate = new Date(defaultDate.getFullYear(), defaultDate.getMonth(), 1);
+            renderCalendar();
+            
+            selectedDateText.textContent = defaultDate.toLocaleDateString('ko-KR', {
+                year: 'numeric',
+                month: 'long', 
+                day: 'numeric'
+            });
+            selectedDateDisplay.classList.remove('hidden');
+
+            // 기본 종목 설정
+            stockTickerInput.value = 'AAPL';
+            stockTickerInput.dispatchEvent(new Event('input'));
+        };
+
+        // 주기적 서버 상태 확인 (30초마다)
+        setInterval(checkServerStatus, 30000);
+
+        // 반응형 처리
+        window.addEventListener('resize', () => {
+            if (myChart) {
+                myChart.resize();
+            }
+        });
+    </script>
+</body>
+</html>
